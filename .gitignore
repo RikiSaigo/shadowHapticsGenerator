@@ -1,0 +1,30 @@
+# Environment variables
+.env
+
+# Xcode
+.DS_Store
+*.xcuserstate
+*.xcuserdatad
+build/
+DerivedData/
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved
+
+# CocoaPods
+Pods/
+*.xcworkspace
+!default.xcworkspace
+
+# Carthage
+Carthage/Build/
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+history/
+painted/
