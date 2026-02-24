@@ -66,6 +66,23 @@ struct PenShadowView: View {
     @State private var animationStartTime: Date? = nil
     @State private var currentShadowLocation: CGPoint = .zero
     
+    // MARK: - Cursor Shape Settings
+    enum CursorShapeType: String, CaseIterable, Identifiable {
+        case penShape = "Pen Shape"
+        case cursor = "Cursor"
+        
+        var filename: String {
+            switch self {
+            case .penShape: return "penShape"
+            case .cursor: return "cursor"
+            }
+        }
+        
+        var id: String { self.rawValue }
+    }
+    
+    @State private var selectedCursorShape: CursorShapeType = .penShape
+    
     // カラーパレット
     let paletteColors: [Color] = [.black, .red, .blue, .green, .yellow, .orange, .purple, .white]
     
@@ -181,6 +198,9 @@ struct PenShadowView: View {
             setup()
             hasLoaded = true
         }
+        .onChange(of: selectedCursorShape) { _, newValue in
+            penShadowShape = loadPenShapeFromCSV(filename: newValue.rawValue == "Pen Shape" ? "penShape" : "cursor")
+        }
     }
     
     // MARK: - Subviews
@@ -256,6 +276,18 @@ struct PenShadowView: View {
                 .frame(width: 220)
             }
             
+            // Cursor Shape Selection
+            VStack(alignment: .leading) {
+                Text("Cursor Shape").font(.caption).foregroundColor(.white)
+                Picker("Cursor Shape", selection: $selectedCursorShape) {
+                    ForEach(CursorShapeType.allCases) { shape in
+                        Text(shape.rawValue).tag(shape)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+            }
+            
             Divider().background(Color.white)
             
             VStack(alignment: .leading) {
@@ -318,7 +350,7 @@ struct PenShadowView: View {
     // MARK: - Setup
     
     private func setup() {
-        penShadowShape = loadPenShapeFromCSV(filename: "penShape")
+        penShadowShape = loadPenShapeFromCSV(filename: selectedCursorShape.filename)
         if let depthMap = processDepthMap(imagePath: depthMapPath) {
             self.depthMapArray = depthMap
             let stdDev = calculateCircleStdDev(map: depthMap)
@@ -702,10 +734,24 @@ struct PenShadowView: View {
     private func drawShadows(context: inout GraphicsContext, canvasSize: CGSize, penLocation: CGPoint, tilt: NSPoint) {
         guard !depthMapArray.isEmpty, !penShadowShape.isEmpty else { return }
         
-        let penTheta = self.stabilizedPenTheta
-        let penAngle = self.stabilizedPenAngle
+        let isCursorMode = (selectedCursorShape == .cursor)
         
-        let penXStep = max(1.0, (1-penAngle) * 2.0)
+        let penTheta: CGFloat
+        let penAngle: CGFloat
+        let penShadowLen: CGFloat
+        let penXStep: CGFloat
+        
+        if isCursorMode {
+            penTheta = CGFloat(Double.pi / 3) // Fixed angle 60 degrees
+            penAngle = 0 // Treat as flat/upright for calculation purposes if needed, but we override effects
+            penShadowLen = 100.0
+            penXStep = 1.0 // Standard step
+        } else {
+            penTheta = self.stabilizedPenTheta
+            penAngle = self.stabilizedPenAngle
+            penXStep = max(1.0, (1-penAngle) * 2.0)
+            penShadowLen = 200/penXStep
+        }
         
         let cosTheta = cos(penTheta)
         let sinTheta = sin(penTheta)
@@ -715,7 +761,6 @@ struct PenShadowView: View {
         let basePosX = baseXOffset
         let basePosY = baseYOffset
         
-        let penShadowLen: CGFloat = 200/penXStep
         let penFadeOutPos: CGFloat = penShadowLen * 0.5
         
         let penShadowTransparency: Double = penShadowTransparencyVal
@@ -725,12 +770,16 @@ struct PenShadowView: View {
         let penShadowMoveScale: CGFloat  = penShadowDeltaPixcelVal * penShadowDeltaPixcelVal / 255.0
         let angleOpacity : Double
         
-        if Double(penAngle) < opacityBaseAngle && Double(penAngle) > opacityBaseAngle/2.0 {
-            angleOpacity = penShadowTransparency * (2 * Double(penAngle) - opacityBaseAngle) / opacityBaseAngle
-        } else if Double(penAngle) < opacityBaseAngle {
-            angleOpacity = 0.0
+        if isCursorMode {
+            angleOpacity = penShadowTransparency // Always visible
         } else {
-            angleOpacity = penShadowTransparency
+            if Double(penAngle) < opacityBaseAngle && Double(penAngle) > opacityBaseAngle/2.0 {
+                angleOpacity = penShadowTransparency * (2 * Double(penAngle) - opacityBaseAngle) / opacityBaseAngle
+            } else if Double(penAngle) < opacityBaseAngle {
+                angleOpacity = 0.0
+            } else {
+                angleOpacity = penShadowTransparency
+            }
         }
         
         let mapWidth = depthMapArray.count
@@ -741,17 +790,27 @@ struct PenShadowView: View {
         
         var pathsByOpacity: [Path] = Array(repeating: Path(), count: 11)
         
+        // Tilt-based shadow direction factor (only relevant if we want depth effect direction to change)
+        // For cursor mode, if we want "no tilt influence", we should probably fix this too or keep it based on theta.
+        // If theta is fixed 0, cos/sin are fixed.
         let shadowCosFactor = cos(-penTheta - Double.pi/7)
         let shadowSinFactor = sin(-penTheta - Double.pi/7)
         
         for x in stride(from: 0, to: penShadowLen, by: penShadowCellSize) {
             let x_int = Int(x)
             var currentOpacityX = penShadowTransparency
-            if x >= penFadeOutPos {
-                currentOpacityX = Double((x - penShadowLen) * CGFloat(penShadowTransparency) / (penFadeOutPos - penShadowLen))
+            
+            if !isCursorMode {
+                if x >= penFadeOutPos {
+                    currentOpacityX = Double((x - penShadowLen) * CGFloat(penShadowTransparency) / (penFadeOutPos - penShadowLen))
+                }
             }
-            guard Int(CGFloat(x_int) * penXStep) < penShadowShape.count else { continue }
-            let penWidthAtX = penShadowShape[Int(CGFloat(x_int) * penXStep)]
+            
+            // For cursor mode, we might need a safer index check if shape is different length?
+            // shape loading handles its own length, but let's be safe.
+            let shapeIndex = Int(CGFloat(x_int) * penXStep)
+            guard shapeIndex < penShadowShape.count else { continue }
+            let penWidthAtX = penShadowShape[shapeIndex]
             
             let penFadeOutPosY = 0.6 * CGFloat(penWidthAtX/2)
             
@@ -774,9 +833,12 @@ struct PenShadowView: View {
                 if checkX >= 0 && checkX < mapWidth && checkY >= 0 && checkY < mapHeight &&
                     baseCheckX >= 0 && baseCheckX < mapWidth && baseCheckY >= 0 && baseCheckY < mapHeight {
                     
-                    if abs(y) >= penFadeOutPosY {
-                        currentOpacityY = Double((abs(y) - penWidthAtX/2) * CGFloat(penShadowTransparency) / (penFadeOutPosY - (penWidthAtX/2)))
+                    if !isCursorMode {
+                        if abs(y) >= penFadeOutPosY {
+                            currentOpacityY = Double((abs(y) - penWidthAtX/2) * CGFloat(penShadowTransparency) / (penFadeOutPosY - (penWidthAtX/2)))
+                        }
                     }
+                    
                     let bufferOpacity: Double = min(currentOpacityX, currentOpacityY)
                     let currentOpacity: Double = min(bufferOpacity, angleOpacity)
                     
